@@ -12,3 +12,13 @@ export const loginSchema = z.object({
     // two factor code is optional because it will only be required if the user has 2FA enabled
     twofactorCode: z.string().optional(),
 })
+
+export const forgotPasswordSchema = z.object({
+    email: z.email(),
+})
+
+export const resetPasswordSchema = z.object({
+    token: z.string(),
+    email: z.email(),
+    password: z.string().min(6) 
+})

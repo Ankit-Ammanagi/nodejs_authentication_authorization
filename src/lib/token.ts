@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto'
 
 export function generateToken(userId: string, role: 'user' | 'admin', tokenVersion: number) {
     const payload = {
@@ -39,4 +40,9 @@ export async function verifyRefreshToken(token: string) {
         userId: string,
         tokenVersion: number,
     }
+}
+
+export function getHashedToken(){
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    return crypto.createHash("sha256").update(rawToken).digest("hex");
 }

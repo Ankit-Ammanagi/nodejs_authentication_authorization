@@ -1,12 +1,18 @@
 import { Request, Response } from "express";
-import { loginSchema, registerSchema } from "./auth.schema";
+import {
+  forgotPasswordSchema,
+  loginSchema,
+  registerSchema,
+  resetPasswordSchema,
+} from "./auth.schema";
 import { User } from "../models/user.model";
-import { comparePasswords, hashPassword } from "../lib/hash";
+import { comparePasswords, hashPassword, } from "../lib/hash";
 import jwt from "jsonwebtoken";
 import { sendEmail } from "../lib/email";
 import {
   generateRefreshToken,
   generateToken,
+  getHashedToken,
   verifyRefreshToken,
 } from "../lib/token";
 
@@ -248,5 +254,106 @@ export async function logoutHandler(req: Request, res: Response) {
   } catch (error) {
     console.error("Logout error:", error);
     return res.status(500).json({ message: "Internal server error" });
+  }
+}
+
+export async function forgotPasswordHandler(req: Request, res: Response) {
+  try {
+    const result = forgotPasswordSchema.safeParse(req.body);
+
+    if (!result.success) {
+      return res.status(400).json({
+        message: "Invalid data",
+        error: result.error.flatten(),
+      });
+    }
+
+    const { email } = result.data;
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const user = await User.findOne({ email: normalizedEmail });
+
+    if (!user) {
+      return res.json({
+        message:
+          "If an account with this email exists, we will send you reset link",
+      });
+    }
+
+    const tokenHash = getHashedToken();
+
+    user.resetPasswordToken = tokenHash;
+    user.resetPasswordExpires = new Date(Date.now() + 5 * 60 * 1000);
+
+    await user.save();
+
+    const resetUrl = `${getAppUrl()}/auth/reset-password?token=${tokenHash}`;
+
+    await sendEmail(
+      user.email,
+      "Reset your password",
+      `<p>You requested password reset</p>
+            <p>Click on the below link to reset yout password</p>
+            <p><a href=${resetUrl}>link</a></p>
+            `,
+    );
+
+    return res.json({
+      message:
+        "If an account with this email exists, we will send you reset link",
+    });
+  } catch (error) {
+    console.error("Forgot password error: ", error);
+
+    return res.status(500).json({
+      message: "Internal server error",
+    });
+  }
+}
+
+export async function resetPasswordHandler(req: Request, res: Response) {
+  try {
+    const result = resetPasswordSchema.safeParse(req.body);
+
+    if (!result.success) {
+      return res.status(400).json({
+        message: "Invalid data",
+        error: result.error.flatten(),
+      });
+    }
+
+    const { email, token, password } = result.data;
+
+    const user = await User.findOne({
+      email: email,
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "Invalid date or expired token",
+      });
+    }
+
+    const newPasswordHash = await hashPassword(password);
+
+    user.passwordHash = newPasswordHash;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+    user.tokenVersion = user.tokenVersion + 1;
+
+    await user.save();
+
+    return res.json({
+      message: "Password reset successfully!",
+    });
+  } catch (error) {
+    console.error("Reset Password error: ", error);
+
+    return res.status(500).json({
+      message: "Internal server error",
+    });
   }
 }
