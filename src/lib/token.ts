@@ -28,3 +28,15 @@ export function generateRefreshToken(userId: string, tokenVersion: number) {
 
     return jwt.sign(payload, secret, { expiresIn: '7d' });
 }
+
+export async function verifyRefreshToken(token: string) {
+    const secret = process.env.JWT_REFRESH_SECRET;
+    if (!secret) {
+        throw new Error("JWT_ACCESS_SECRET is not set in environment variables");
+    }
+
+    return jwt.verify(token, secret) as {
+        userId: string,
+        tokenVersion: number,
+    }
+}

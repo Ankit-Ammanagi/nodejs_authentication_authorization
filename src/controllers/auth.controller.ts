@@ -4,7 +4,11 @@ import { User } from "../models/user.model";
 import { comparePasswords, hashPassword } from "../lib/hash";
 import jwt from "jsonwebtoken";
 import { sendEmail } from "../lib/email";
-import { generateRefreshToken, generateToken } from "../lib/token";
+import {
+  generateRefreshToken,
+  generateToken,
+  verifyRefreshToken,
+} from "../lib/token";
 
 function getAppUrl() {
   return process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
@@ -151,7 +155,7 @@ export async function loginHandler(req: Request, res: Response) {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
+      sameSite: "lax",
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
@@ -168,6 +172,81 @@ export async function loginHandler(req: Request, res: Response) {
     });
   } catch (error) {
     console.error("Login error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+}
+
+export async function refreshHandler(req: Request, res: Response) {
+  try {
+    const token = req.cookies?.refreshToken;
+
+    if (!token) {
+      return res.status(401).json({ message: "No refresh token provided" });
+    }
+
+    const { userId, tokenVersion } = await verifyRefreshToken(token);
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (user.tokenVersion !== tokenVersion) {
+      return res.status(401).json({ message: "Invalid refresh token" });
+    }
+
+    const newAccessToken = generateToken(
+      user._id.toString(),
+      user.role,
+      user.tokenVersion,
+    );
+
+    const newRefreshToken = generateRefreshToken(
+      user._id.toString(),
+      user.tokenVersion,
+    );
+
+    res.cookie("refreshToken", newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
+    return res.status(200).json({
+      message: "Token refreshed successfully",
+      accessToken: newAccessToken,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        isEmailVerified: user.isEmailVerified,
+        twofactorEnabled: user.twoFactorEnabled,
+      },
+    });
+  } catch (error) {
+    console.error("Token refresh error:", error);
+    return res.status(401).json({ message: "Invalid refresh token" });
+  }
+}
+
+export async function logoutHandler(req: Request, res: Response) {
+  try {
+    const token = req.cookies?.refreshToken;
+
+    if (!token) {
+      return res.status(400).json({ message: "No refresh token provided" });
+    }
+
+    res.clearCookie("refreshToken", {
+      path: "/",
+    });
+
+    return res.status(200).json({ message: "Logged out successfully" });
+  } catch (error) {
+    console.error("Logout error:", error);
     return res.status(500).json({ message: "Internal server error" });
   }
 }
