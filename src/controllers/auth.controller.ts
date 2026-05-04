@@ -6,7 +6,7 @@ import {
   resetPasswordSchema,
 } from "./auth.schema";
 import { User } from "../models/user.model";
-import { comparePasswords, hashPassword, } from "../lib/hash";
+import { comparePasswords, hashPassword } from "../lib/hash";
 import jwt from "jsonwebtoken";
 import { sendEmail } from "../lib/email";
 import {
@@ -15,9 +15,27 @@ import {
   getHashedToken,
   verifyRefreshToken,
 } from "../lib/token";
+import { OAuth2Client } from "google-auth-library";
+import crypto from "crypto";
 
 function getAppUrl() {
   return process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+}
+
+function getGoogleClient() {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+
+  if (!clientId || !clientSecret || !redirectUri) {
+    throw new Error("Google OAuth environment variables are not set");
+  }
+
+  return new OAuth2Client({
+    clientId,
+    clientSecret,
+    redirectUri,
+  });
 }
 
 export async function registerHandler(req: Request, res: Response) {
@@ -355,5 +373,109 @@ export async function resetPasswordHandler(req: Request, res: Response) {
     return res.status(500).json({
       message: "Internal server error",
     });
+  }
+}
+
+export async function googleAuthStartHandler(req: Request, res: Response) {
+  try {
+    const client = getGoogleClient();
+
+    const url = client.generateAuthUrl({
+      access_type: "offline",
+      prompt: "consent",
+      scope: ["openid", "email", "profile"],
+    });
+
+    return res.redirect(url);
+  } catch (error) {
+    console.error("Google Auth Start error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+}
+
+export async function googleAuthCallbackHandler(req: Request, res: Response) {
+  const code = req.query.code as string;
+
+  if (!code) {
+    return res.status(400).json({ message: "No code provided" });
+  }
+
+  try {
+    const client = getGoogleClient();
+
+    const { tokens } = await client.getToken(code);
+
+    if (!tokens.id_token) {
+      return res
+        .status(400)
+        .json({ message: "No id token received from Google" });
+    }
+
+    const ticket = await client.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: process.env.GOOGLE_CLIENT_ID as string,
+    });
+
+    const payload = ticket.getPayload();
+
+    const email = payload?.email;
+    const emailVerified = payload?.email_verified;
+
+    if (!email || !emailVerified) {
+      return res.status(400).json({ message: "Email not verified by Google" });
+    }
+
+    const normalizedEmail = email.toLocaleLowerCase().trim();
+
+    let user = await User.findOne({ email: normalizedEmail });
+
+    if (!user) {
+      const randomPassword = crypto.randomBytes(16).toString("hex");
+      const passwordHash = await hashPassword(randomPassword);
+
+      user = await User.create({
+        name: payload?.name,
+        email: normalizedEmail,
+        passwordHash,
+        isEmailVerified: true,
+        twoFactorEnabled: false,
+      });
+    } else if (!user.isEmailVerified) {
+      user.isEmailVerified = true;
+      await user.save();
+    }
+
+    const accessToken = generateToken(
+      user._id.toString(),
+      user.role as "user" | "admin",
+      user.tokenVersion,
+    );
+
+    const refreshToken = generateRefreshToken(
+      user._id.toString(),
+      user.tokenVersion,
+    );
+
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
+    return res.status(200).json({
+      message: "Login successful",
+      accessToken,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        isEmailVerified: user.isEmailVerified,
+      },
+    });
+  } catch (error) {
+    console.error("Google Auth Callback error:", error);
+    return res.status(500).json({ message: "Internal server error" });
   }
 }
